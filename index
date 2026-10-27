@@ -1,0 +1,438 @@
+import speech_recognition as sr
+import pyttsx3
+import time
+import datetime
+import psutil
+import socket
+import subprocess
+import platform
+import os
+import webbrowser
+
+# Initialize text-to-speech engine
+tts_engine = pyttsx3.init()
+tts_engine.setProperty('rate', 150)
+tts_engine.setProperty('volume', 0.9)
+
+# Global variable for input mode
+INPUT_MODE = "voice"
+
+class SecurityLogger:
+    def __init__(self):
+        self.log_file = "security_activities.log"
+        self.setup_logging()
+    
+    def setup_logging(self):
+        if not os.path.exists(self.log_file):
+            with open(self.log_file, 'w') as f:
+                f.write("Security Assistant Log File\n")
+                f.write("=" * 50 + "\n")
+    
+    def log_activity(self, activity_type, details):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {activity_type}: {details}\n"
+        
+        with open(self.log_file, 'a') as f:
+            f.write(log_entry)
+        
+        return log_entry
+
+# Initialize logger
+logger = SecurityLogger()
+
+def open_event_viewer():
+    """باز کردن Event Viewer بر اساس سیستم عامل"""
+    try:
+        system_os = platform.system()
+        
+        if system_os == "Windows":
+            # باز کردن Event Viewer ویندوز
+            subprocess.Popen(['eventvwr.msc'])
+            return "Opening Windows Event Viewer..."
+        
+        elif system_os == "Linux":
+            # برای لینوکس (systemd journal)
+            try:
+                # سعی در باز کردن GUI-based log viewer
+                subprocess.Popen(['gnome-logs'])
+                return "Opening GNOME Logs Viewer..."
+            except:
+                # اگر GUI نبود، terminal-based نمایش دهد
+                subprocess.Popen(['x-terminal-emulator', '-e', 'journalctl --follow'])
+                return "Opening System Journal in terminal..."
+        
+        elif system_os == "Darwin":  # macOS
+            # باز کردن Console.app در مک
+            subprocess.Popen(['open', '/Applications/Utilities/Console.app'])
+            return "Opening macOS Console..."
+        
+        else:
+            return "Event viewer not supported on this operating system."
+    
+    except Exception as e:
+        logger.log_activity("ERROR", f"Event viewer opening failed: {str(e)}")
+        return f"Failed to open event viewer: {str(e)}"
+
+def get_system_logs_preview():
+    """پیش‌نمایش خلاصه لاگ‌های سیستم"""
+    try:
+        system_os = platform.system()
+        
+        if system_os == "Windows":
+            # گرفتن آخرین رویدادهای ویندوز
+            result = subprocess.run([
+                'powershell', 
+                'Get-EventLog -LogName System -Newest 5 | Format-Table TimeGenerated,EntryType,Source,Message -AutoSize'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                return f"Recent System Events:\n{result.stdout[:500]}..."
+            else:
+                return "Could not retrieve system events. Try opening Event Viewer for full details."
+        
+        elif system_os == "Linux":
+            # آخرین لاگ‌های لینوکس
+            result = subprocess.run([
+                'journalctl', '--no-pager', '-n', '5', '--priority', '0..4'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                return f"Recent System Logs:\n{result.stdout[:500]}..."
+            else:
+                return "Could not retrieve system logs. Try opening log viewer for full details."
+        
+        elif system_os == "Darwin":  # macOS
+            # آخرین لاگ‌های macOS
+            result = subprocess.run([
+                'log', 'show', '--last', '1h', '--style', 'compact', '--predicate', 'eventType == "errorEvent"'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                return f"Recent macOS Logs:\n{result.stdout[:500]}..."
+            else:
+                return "Could not retrieve system logs. Try opening Console for full details."
+    
+    except Exception as e:
+        logger.log_activity("ERROR", f"Log preview failed: {str(e)}")
+        return f"Error retrieving logs: {str(e)}"
+
+def check_system_health():
+    """بررسی سلامت سیستم"""
+    cpu_usage = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    return f"""
+System Health Report:
+CPU Usage: {cpu_usage}%
+Memory Usage: {memory.percent}%
+Available Memory: {memory.available // (1024**3)}GB
+Disk Usage: {disk.percent}%
+"""
+
+def network_scan():
+    """اسکن شبکه ساده"""
+    try:
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        
+        common_ports = { 21: "FTP",
+    22: "SSH",
+    23: "Telnet",
+    25: "SMTP",
+    53: "DNS",
+    80: "HTTP",
+    110: "POP3",
+    135:"msrpc/epmap",
+    143: "IMAP",
+    443: "HTTPS",
+    465: "SMTPS",
+    587: "SMTP (Submission)",
+    993: "IMAPS",
+    995: "POP3S",
+    1433: "MSSQL",
+    3306: "MySQL",
+    3389: "RDP",
+    5432: "PostgreSQL",
+    6379: "Redis",
+    27017: "MongoDB",
+    9200: "Elasticsearch"}
+        open_ports = []
+        
+        for port in common_ports:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            result = sock.connect_ex((local_ip, port))
+            if result == 0:
+                open_ports.append(port)
+            sock.close()
+        
+        return f"Local IP: {local_ip}, Open ports: {open_ports}"
+    
+    except Exception as e:
+        return f"Network scan error: {str(e)}"
+
+def check_running_processes():
+    """بررسی فرآیندهای در حال اجرا"""
+    suspicious_processes = []
+    for proc in psutil.process_iter(['name', 'cpu_percent', 'memory_percent']):
+        if proc.info['cpu_percent'] > 50 or proc.info['memory_percent'] > 20:
+            suspicious_processes.append(proc.info['name'])
+    
+    return f"High resource processes: {suspicious_processes[:5]}"
+
+def system_info():
+    """اطلاعات کامل سیستم"""
+    system = platform.system()
+    version = platform.version()
+    architecture = platform.architecture()
+    
+    return f"""
+System Information:
+OS: {system} {version}
+Architecture: {architecture}
+Processor: {platform.processor()}
+"""
+
+def check_firewall_status():
+    """بررسی وضعیت فایروال"""
+    try:
+        if platform.system() == "Windows":
+            result = subprocess.run(['netsh', 'advfirewall', 'show', 'allprofiles', 'state'], 
+                                  capture_output=True, text=True)
+            return result.stdout
+        else:
+            result = subprocess.run(['sudo', 'ufw', 'status'], 
+                                  capture_output=True, text=True)
+            return result.stdout
+    except Exception as e:
+        return f"Firewall check failed: {str(e)}"
+
+def get_installed_software():
+    """گرفتن لیست نرم‌افزارهای نصب شده"""
+    installed_software = []
+    
+    try:
+        if platform.system() == "Windows":
+            import winreg
+            reg_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+            
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path) as key:
+                for i in range(winreg.QueryInfoKey(key)[0]):
+                    try:
+                        subkey_name = winreg.EnumKey(key, i)
+                        with winreg.OpenKey(key, subkey_name) as subkey:
+                            try:
+                                name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                                installed_software.append(name)
+                            except FileNotFoundError:
+                                pass
+                    except WindowsError:
+                        pass
+        
+        elif platform.system() == "Linux":
+            try:
+                result = subprocess.run(['dpkg', '--get-selections'], 
+                                      capture_output=True, text=True)
+                packages = result.stdout.split('\n')
+                installed_software = [pkg.split('\t')[0] for pkg in packages if pkg]
+            except:
+                pass
+        
+        elif platform.system() == "Darwin":
+            try:
+                result = subprocess.run(['system_profiler', 'SPApplicationsDataType'], 
+                                      capture_output=True, text=True)
+                installed_software = [line.strip() for line in result.stdout.split('\n') 
+                                    if '.app' in line and 'Location:' not in line]
+            except:
+                pass
+    
+    except Exception as e:
+        logger.log_activity("ERROR", f"Software detection failed: {str(e)}")
+    
+    return installed_software
+
+def get_today_activities():
+    """گزارش فعالیت‌های امروز"""
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    today_activities = []
+    
+    try:
+        with open(logger.log_file, 'r') as f:
+            lines = f.readlines()
+            for line in lines:
+                if today in line:
+                    today_activities.append(line.strip())
+    except FileNotFoundError:
+        pass
+    
+    return today_activities
+
+def generate_security_report():
+    """ایجاد گزارش امنیتی کامل"""
+    report = []
+    
+    report.append("=== SECURITY REPORT ===")
+    report.append(f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    report.append("")
+    
+    report.append("1. SYSTEM HEALTH:")
+    report.append(check_system_health())
+    
+    report.append("2. NETWORK STATUS:")
+    report.append(network_scan())
+    
+    report.append("3. FIREWALL STATUS:")
+    report.append(check_firewall_status())
+    
+    report.append("4. SYSTEM LOGS PREVIEW:")
+    report.append(get_system_logs_preview())
+    
+    return "\n".join(report)
+
+def switch_to_text_mode():
+    global INPUT_MODE
+    INPUT_MODE = "text"
+    return "Switched to text input mode. Type your commands."
+
+def switch_to_voice_mode():
+    global INPUT_MODE
+    INPUT_MODE = "voice"
+    return "Switched to voice input mode. Speak your commands."
+
+def get_user_input():
+    """Get input based on current mode"""
+    global INPUT_MODE
+    
+    if INPUT_MODE == "text":
+        return input("📝 Security Command: ").lower()
+    
+    else:
+        try:
+            r = sr.Recognizer()
+            with sr.Microphone() as source:
+                print("🎤 Listening for security command...")
+                r.adjust_for_ambient_noise(source, duration=1)
+                audio = r.listen(source, timeout=5, phrase_time_limit=7)
+            
+            text = r.recognize_google(audio, language="en-US")
+            print(f"👤 Security Command: {text}")
+            logger.log_activity("VOICE_COMMAND", f"User said: {text}")
+            return text.lower()
+        
+        except (sr.WaitTimeoutError, sr.UnknownValueError, sr.RequestError):
+            print("🎤 Voice recognition failed. Switching to text mode...")
+            logger.log_activity("MODE_SWITCH", "Auto-switched to text mode due to voice recognition failure")
+            INPUT_MODE = "text"
+            return input("📝 Please type your security command: ").lower()
+
+def give_response(response):
+    print(f"🤖 Security Assistant: {response}")
+    tts_engine.say(response)
+    tts_engine.runAndWait()
+
+def process_input(cmd):
+    cmd = cmd.lower().strip()
+    
+    if not cmd:
+        return "I didn't hear anything. Please try again."
+    
+    elif any(word in cmd for word in ['hello', 'hi', 'hey']):
+        logger.log_activity("GREETING", "User greeted the assistant")
+        return "Hello! I'm your security assistant. How can I help?"
+    
+    elif 'system health' in cmd or 'system status' in cmd:
+        logger.log_activity("SYSTEM_HEALTH", "User requested system health check")
+        return check_system_health()
+    
+    elif 'network scan' in cmd or 'check ports' in cmd:
+        logger.log_activity("NETWORK_SCAN", "User requested network scan")
+        return network_scan()
+    
+    elif 'process' in cmd or 'task' in cmd:
+        logger.log_activity("PROCESS_CHECK", "User requested process check")
+        return check_running_processes()
+    
+    elif 'system info' in cmd or 'system information' in cmd:
+        logger.log_activity("SYSTEM_INFO", "User requested system information")
+        return system_info()
+    
+    elif 'firewall' in cmd:
+        logger.log_activity("FIREWALL_CHECK", "User requested firewall status")
+        return check_firewall_status()
+    
+    elif 'event viewer' in cmd or 'system logs' in cmd or 'open logs' in cmd:
+        logger.log_activity("EVENT_VIEWER", "User requested to open event viewer")
+        return open_event_viewer()
+    
+    elif 'log preview' in cmd or 'view logs' in cmd:
+        logger.log_activity("LOG_PREVIEW", "User requested log preview")
+        return get_system_logs_preview()
+    
+    elif 'today activities' in cmd or 'today logs' in cmd:
+        logger.log_activity("TODAY_ACTIVITIES", "User requested today's activities")
+        activities = get_today_activities()
+        if activities:
+            return f"Today's activities:\n" + "\n".join(activities[-10:])
+        else:
+            return "No activities logged today."
+    
+    elif 'installed software' in cmd or 'installed programs' in cmd:
+        logger.log_activity("SOFTWARE_LIST", "User requested installed software list")
+        software = get_installed_software()
+        return f"Installed software ({len(software)} items):\n" + "\n".join(software[:10]) + "\n... (showing first 10)"
+    
+    elif 'security report' in cmd or 'full report' in cmd:
+        logger.log_activity("FULL_REPORT", "User requested full security report")
+        return generate_security_report()
+    
+    elif 'text mode' in cmd or 'switch to text' in cmd:
+        logger.log_activity("MODE_SWITCH", "Switched to text mode")
+        return switch_to_text_mode()
+    
+    elif 'voice mode' in cmd or 'switch to voice' in cmd:
+        logger.log_activity("MODE_SWITCH", "Switched to voice mode")
+        return switch_to_voice_mode()
+    
+    elif any(word in cmd for word in ['bye', 'goodbye', 'exit', 'quit']):
+        logger.log_activity("SESSION_END", "User ended the session")
+        return "Goodbye! Stay secure!"
+    
+    else:
+        return f"Security command '{cmd}' not recognized. Available commands: system health, network scan, processes, system info, event viewer, log preview, today activities, installed software, security report, text mode, voice mode"
+
+def main():
+    print("🚀 Security Assistant Activated!")
+    print("🔒 Mode: Voice Input (say 'text mode' to switch)")
+    print("📍 Available Security Commands:")
+    print("   - system health/status")
+    print("   - network scan/check ports")
+    print("   - processes/tasks")
+    print("   - system info")
+    print("   - firewall status")
+    print("   - event viewer/system logs")
+    print("   - log preview/view logs")
+    print("   - today activities/logs")
+    print("   - installed software/programs")
+    print("   - security report")
+    print("   - text mode / voice mode")
+    print("   - bye/exit")
+    
+    logger.log_activity("SESSION_START", "Security assistant started")
+    
+    while True:
+        user_input = get_user_input()
+        
+        if user_input in ['bye', 'goodbye', 'exit', 'quit']:
+            response = process_input(user_input)
+            give_response(response)
+            break
+        
+        response = process_input(user_input)
+        give_response(response)
+        
+        time.sleep(1)
+
+if __name__ == "__main__":
+    main()
